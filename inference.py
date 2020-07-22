@@ -35,33 +35,90 @@ class Network:
     """
 
     def __init__(self):
-        ### TODO: Initialize any class variables desired ###
+        ### Initialize any class variables desired ###
+        self.plugin = None
+        self.network = None
+        self.model_name = None
+        self.net_plugin = None
+        self.input_blob = None
+        self.output_blob = None
+        self.infer_request_handle = None
 
-    def load_model(self):
-        ### TODO: Load the model ###
-        ### TODO: Check for supported layers ###
-        ### TODO: Add any necessary extensions ###
-        ### TODO: Return the loaded inference plugin ###
-        ### Note: You may need to update the function parameters. ###
-        return
+    def load_model(self, model, model_name, device="CPU", cpu_extension=None):
+        '''
+        Load the model given IR files.
+        Defaults to CPU as device for use in the workspace.
+        Synchronous requests made within.
+        '''
+            
+        ### Initialize the plugin ###
+        self.plugin = IECore()
+        
+        ### Load the model ###
+        model_xml = model
+        model_bin = os.path.splitext(model_xml)[0] + ".bin"
+        self.model_name = model_name
+        self.network = IENetwork(model=model_xml, weights=model_bin)
+        
+        ### Check for supported layers ###
+        ### Add any necessary extensions ###
+        unsupported_layers = self.get_unsupported_layers(device)
+        if len(unsupported_layers):
+            print("Unsupported layers found: {}".format(unsupported_layers))
+            if cpu_extension and "CPU" in device:
+                print("Using CPU Extension")
+                self.plugin.add_extension(cpu_extension, device)
+                unsupported_layers = self.get_unsupported_layers(device)
+                if len(unsupported_layers):
+                    print("Unsupported layers found: {}".format(unsupported_layers))
+                    print("Check whether extensions are available to add to IECore.")
+                    sys.exit(1)
+            else:
+                print("Check whether extensions are available to add to IECore.")
+                sys.exit(1)
+            
+        ### Return the loaded inference plugin ###
+        self.net_plugin = self.plugin.load_network(self.network, device)
+        
+        ### Get the input layer ###
+        self.input_blob = next(iter(self.network.inputs))
+        self.output_blob = next(iter(self.network.outputs))
+        
+        return self.net_plugin
 
     def get_input_shape(self):
-        ### TODO: Return the shape of the input layer ###
-        return
+        ### Return the shape of the input layer ###
+        if self.model_name == "F-RCNN":
+            return self.network.inputs['image_tensor'].shape
+        else:
+            return self.network.inputs[self.input_blob].shape
 
-    def exec_net(self):
-        ### TODO: Start an asynchronous request ###
-        ### TODO: Return any necessary information ###
-        ### Note: You may need to update the function parameters. ###
-        return
+    def exec_net(self, image):
+        ### Start an asynchronous request ###
+        ### Return any necessary information ###
+        input_data = None
+        if self.model_name == "F-RCNN":
+            input_data = {'image_tensor': image, 'image_info': image.shape[1:]}
+        else:
+            input_data = {self.input_blob: image}
+        self.infer_request_handle = self.net_plugin.start_async(request_id=0, 
+            inputs=input_data)
+        return self.infer_request_handle
 
     def wait(self):
-        ### TODO: Wait for the request to be complete. ###
-        ### TODO: Return any necessary information ###
-        ### Note: You may need to update the function parameters. ###
-        return
+        ### Wait for the request to be complete. ###
+        ### Return any necessary information ###
+        status = self.infer_request_handle.wait(-1)
+        return status
 
     def get_output(self):
-        ### TODO: Extract and return the output results
-        ### Note: You may need to update the function parameters. ###
-        return
+        ### Extract and return the output results ###
+        return self.infer_request_handle.outputs[self.output_blob]
+    
+    def get_unsupported_layers(self, device):
+        ### Return the layers not supported by the network ###
+        supported_layers = self.plugin.query_network(network=self.network, device_name=device)
+        unsupported_layers = [l for l in self.network.layers.keys() if l not in supported_layers]
+        
+        return unsupported_layers
+    
